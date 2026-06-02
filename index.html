@@ -1,0 +1,1207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0a0f" />
+<title>Synthesia Clone — Waterfall Piano</title>
+<!-- Tone.js (for piano sound synthesis) -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<!-- @tonejs/midi (MIDI file parser) -->
+<script src="https://unpkg.com/@tonejs/midi@2.0.28/build/Midi.js"></script>
+<style>
+  :root {
+    --bg-0: #07070c;
+    --bg-1: #0e0e18;
+    --bg-2: #15162400;
+    --panel: rgba(18, 19, 32, 0.78);
+    --panel-border: rgba(255, 255, 255, 0.08);
+    --text: #e8ecff;
+    --text-dim: #8a90b3;
+    --accent: #7c5cff;
+    --rh: #ff3da6;   /* neon pink — right hand */
+    --rh-glow: rgba(255, 61, 166, 0.55);
+    --lh: #00d4ff;   /* neon blue — left hand */
+    --lh-glow: rgba(0, 212, 255, 0.55);
+    --white-key: #f5f6fb;
+    --white-key-edge: #c9cde0;
+    --black-key: #15161f;
+    --black-key-edge: #000;
+    --hit-line: #ffffff;
+    --good: #36e07f;
+  }
+
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%; width: 100%;
+    background: radial-gradient(ellipse at top, #11122a 0%, var(--bg-0) 60%);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    overflow: hidden;
+    touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  #app { position: fixed; inset: 0; }
+
+  canvas#stage {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    display: block;
+    background: linear-gradient(180deg, #07070c 0%, #0a0a18 50%, #050509 100%);
+  }
+
+  /* ---------- Top bar ---------- */
+  .topbar {
+    position: absolute; top: 10px; left: 10px; right: 10px;
+    display: flex; gap: 8px; align-items: center; justify-content: space-between;
+    pointer-events: none;
+    z-index: 10;
+  }
+  .brand {
+    pointer-events: auto;
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--panel-border);
+    padding: 8px 14px;
+    border-radius: 14px;
+    font-weight: 700;
+    font-size: 14px;
+    letter-spacing: 0.5px;
+    display: flex; align-items: center; gap: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .brand .dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: linear-gradient(135deg, var(--rh), var(--lh));
+    box-shadow: 0 0 12px var(--rh-glow);
+  }
+  .topbar-right {
+    pointer-events: auto;
+    display: flex; gap: 8px;
+  }
+  .pill {
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--panel-border);
+    padding: 8px 12px;
+    border-radius: 999px;
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex; align-items: center; gap: 6px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .pill.ok { color: var(--good); }
+  .pill.warn { color: #ffb84d; }
+  .pill .led {
+    width: 7px; height: 7px; border-radius: 50%;
+    background: currentColor;
+    box-shadow: 0 0 8px currentColor;
+  }
+
+  /* ---------- Control Panel ---------- */
+  .panel {
+    position: absolute;
+    top: 56px; left: 10px;
+    width: 280px;
+    max-width: calc(100vw - 20px);
+    background: var(--panel);
+    backdrop-filter: blur(16px);
+    -webkit-backdrop-filter: blur(16px);
+    border: 1px solid var(--panel-border);
+    border-radius: 16px;
+    padding: 12px;
+    z-index: 10;
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5);
+    transition: transform 0.25s ease, opacity 0.25s ease;
+    transform-origin: top left;
+  }
+  .panel.collapsed { transform: scale(0.95) translateY(-10px); opacity: 0; pointer-events: none; }
+
+  .panel h3 {
+    margin: 4px 4px 10px;
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--text-dim);
+    font-weight: 600;
+  }
+
+  .row { display: flex; gap: 6px; margin-bottom: 8px; }
+  .row:last-child { margin-bottom: 0; }
+
+  .btn {
+    flex: 1;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    color: var(--text);
+    padding: 9px 10px;
+    border-radius: 10px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    text-align: center;
+  }
+  .btn:hover { background: rgba(255,255,255,0.08); }
+  .btn:active { transform: scale(0.97); }
+  .btn.active {
+    background: linear-gradient(135deg, var(--accent), #5a3dff);
+    border-color: transparent;
+    color: white;
+    box-shadow: 0 4px 14px rgba(124, 92, 255, 0.4);
+  }
+  .btn.hand-rh.active {
+    background: linear-gradient(135deg, var(--rh), #d62a85);
+    box-shadow: 0 4px 14px var(--rh-glow);
+  }
+  .btn.hand-lh.active {
+    background: linear-gradient(135deg, var(--lh), #00a4cc);
+    box-shadow: 0 4px 14px var(--lh-glow);
+  }
+  .btn.hand-both.active {
+    background: linear-gradient(135deg, var(--lh), var(--rh));
+  }
+
+  .slider-wrap {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.08);
+    border-radius: 10px;
+    padding: 8px 10px;
+  }
+  .slider-wrap label {
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: var(--text-dim);
+    margin-bottom: 6px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+  }
+  .slider-wrap label .val { color: var(--text); font-variant-numeric: tabular-nums; }
+  input[type="range"] {
+    width: 100%; -webkit-appearance: none; appearance: none;
+    background: transparent; height: 18px;
+  }
+  input[type="range"]::-webkit-slider-runnable-track {
+    height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px;
+  }
+  input[type="range"]::-moz-range-track {
+    height: 4px; background: rgba(255,255,255,0.1); border-radius: 2px;
+  }
+  input[type="range"]::-webkit-slider-thumb {
+    -webkit-appearance: none; appearance: none;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent);
+    margin-top: -6px;
+    box-shadow: 0 2px 8px rgba(124, 92, 255, 0.6);
+    cursor: pointer;
+  }
+  input[type="range"]::-moz-range-thumb {
+    width: 16px; height: 16px; border-radius: 50%;
+    background: var(--accent); border: none;
+    box-shadow: 0 2px 8px rgba(124, 92, 255, 0.6);
+    cursor: pointer;
+  }
+
+  .file-btn {
+    display: block;
+    width: 100%;
+    background: linear-gradient(135deg, #1c1d2e, #15162400);
+    border: 1.5px dashed rgba(255,255,255,0.15);
+    color: var(--text);
+    padding: 14px 10px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s ease;
+  }
+  .file-btn:hover { border-color: var(--accent); background: rgba(124,92,255,0.08); }
+  .file-btn .filename {
+    display: block; font-size: 10px; color: var(--text-dim);
+    margin-top: 4px; font-weight: 400;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  input[type="file"] { display: none; }
+
+  /* ---------- Transport ---------- */
+  .transport {
+    position: absolute;
+    top: 10px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex; gap: 6px;
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--panel-border);
+    border-radius: 999px;
+    padding: 6px;
+    z-index: 10;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+  .tbtn {
+    width: 38px; height: 38px;
+    border-radius: 50%;
+    background: rgba(255,255,255,0.04);
+    border: 1px solid rgba(255,255,255,0.06);
+    color: var(--text);
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s ease;
+    font-size: 14px;
+  }
+  .tbtn:hover { background: rgba(255,255,255,0.1); }
+  .tbtn:active { transform: scale(0.92); }
+  .tbtn.play { background: linear-gradient(135deg, var(--accent), #5a3dff); }
+  .tbtn.play.paused { background: linear-gradient(135deg, var(--good), #2ab864); }
+
+  /* ---------- Wait-for-note indicator ---------- */
+  .wait-banner {
+    position: absolute;
+    top: 60px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(20, 22, 40, 0.92);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    padding: 10px 18px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 600;
+    z-index: 9;
+    box-shadow: 0 0 30px rgba(124, 92, 255, 0.4);
+    display: none;
+    align-items: center; gap: 8px;
+    animation: pulse 1.2s ease-in-out infinite;
+  }
+  .wait-banner.show { display: flex; }
+  .wait-banner .icon {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent);
+    box-shadow: 0 0 10px var(--accent);
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 20px rgba(124, 92, 255, 0.3); }
+    50% { box-shadow: 0 0 40px rgba(124, 92, 255, 0.7); }
+  }
+
+  /* ---------- Toggle Panel Button ---------- */
+  .toggle-panel {
+    position: absolute;
+    top: 10px; right: 10px;
+    width: 38px; height: 38px;
+    border-radius: 12px;
+    background: var(--panel);
+    backdrop-filter: blur(14px);
+    -webkit-backdrop-filter: blur(14px);
+    border: 1px solid var(--panel-border);
+    color: var(--text);
+    cursor: pointer;
+    display: none;
+    align-items: center; justify-content: center;
+    z-index: 11;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  }
+
+  /* ---------- Start overlay ---------- */
+  .start-overlay {
+    position: absolute; inset: 0;
+    background: rgba(7, 7, 12, 0.85);
+    backdrop-filter: blur(10px);
+    z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    flex-direction: column; gap: 16px;
+    text-align: center;
+    padding: 20px;
+  }
+  .start-overlay.hidden { display: none; }
+  .start-overlay h1 {
+    font-size: 28px; margin: 0;
+    background: linear-gradient(135deg, var(--lh), var(--rh));
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    font-weight: 800;
+    letter-spacing: -0.5px;
+  }
+  .start-overlay p { color: var(--text-dim); font-size: 13px; margin: 0; max-width: 360px; }
+  .start-btn {
+    background: linear-gradient(135deg, var(--accent), #5a3dff);
+    color: white;
+    border: none;
+    padding: 14px 32px;
+    border-radius: 14px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(124, 92, 255, 0.5);
+    margin-top: 8px;
+  }
+  .start-btn:active { transform: scale(0.97); }
+
+  @media (max-width: 800px) {
+    .panel { width: 240px; top: 56px; }
+    .brand { font-size: 12px; padding: 6px 10px; }
+    .topbar-right .pill { padding: 6px 10px; font-size: 10px; }
+    .transport { top: 8px; }
+    .tbtn { width: 34px; height: 34px; }
+  }
+  @media (max-height: 450px) {
+    .panel { max-height: calc(100vh - 70px); overflow-y: auto; }
+  }
+</style>
+</head>
+<body>
+<div id="app">
+  <canvas id="stage"></canvas>
+
+  <!-- Top bar -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="dot"></span>
+      <span>Waterfall Piano</span>
+    </div>
+    <div class="topbar-right">
+      <div class="pill" id="midiStatus"><span class="led"></span><span id="midiStatusText">No MIDI</span></div>
+    </div>
+  </div>
+
+  <!-- Transport -->
+  <div class="transport">
+    <button class="tbtn" id="rewindBtn" title="Restart">⏮</button>
+    <button class="tbtn play" id="playBtn" title="Play/Pause">▶</button>
+    <button class="tbtn" id="panelToggleBtn" title="Settings">⚙</button>
+  </div>
+
+  <!-- Wait banner -->
+  <div class="wait-banner" id="waitBanner">
+    <span class="icon"></span>
+    <span id="waitText">Play the highlighted note(s)…</span>
+  </div>
+
+  <!-- Control Panel -->
+  <div class="panel" id="panel">
+    <h3>Mode</h3>
+    <div class="row">
+      <button class="btn active" id="modeNormal">Normal</button>
+      <button class="btn" id="modePractice">Practice</button>
+    </div>
+
+    <h3>Practice Hands</h3>
+    <div class="row">
+      <button class="btn hand-lh" id="handLH">Left</button>
+      <button class="btn hand-rh" id="handRH">Right</button>
+      <button class="btn hand-both active" id="handBoth">Both</button>
+    </div>
+
+    <h3>Speed</h3>
+    <div class="slider-wrap">
+      <label>Tempo <span class="val" id="speedVal">1.00×</span></label>
+      <input type="range" id="speedSlider" min="0.5" max="2" step="0.05" value="1" />
+    </div>
+
+    <h3 style="margin-top:10px;">Volume</h3>
+    <div class="slider-wrap">
+      <label>Output <span class="val" id="volVal">80%</span></label>
+      <input type="range" id="volSlider" min="0" max="100" step="1" value="80" />
+    </div>
+
+    <h3 style="margin-top:10px;">MIDI File</h3>
+    <label class="file-btn" for="fileInput">
+      📁 Load .mid file
+      <span class="filename" id="fileName">No file loaded</span>
+    </label>
+    <input type="file" id="fileInput" accept=".mid,.midi,audio/midi,audio/x-midi" />
+  </div>
+
+  <!-- Start overlay -->
+  <div class="start-overlay" id="startOverlay">
+    <h1>🎹 Waterfall Piano</h1>
+    <p>A Synthesia-style player with physical MIDI input, practice mode, and full piano sound. Tap below to enable audio and start.</p>
+    <button class="start-btn" id="startBtn">Tap to Start</button>
+    <p style="font-size:11px; opacity:0.6;">Tip: Rotate your phone to landscape for the best experience.</p>
+  </div>
+</div>
+
+<script>
+'use strict';
+
+/* =====================================================================
+   WATERFALL PIANO — single-file Synthesia clone
+   --------------------------------------------------------------------- */
+
+// ---------- Constants ----------
+const FIRST_MIDI = 21;   // A0
+const LAST_MIDI  = 108;  // C8
+const NUM_KEYS   = LAST_MIDI - FIRST_MIDI + 1; // 88
+const NOTE_NAMES = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B'];
+const WHITE_PATTERN = [true,false,true,false,true,true,false,true,false,true,false,true]; // from C
+
+function isBlackKey(midi) {
+  const n = midi % 12;
+  return [1,3,6,8,10].includes(n);
+}
+function noteName(midi) {
+  return NOTE_NAMES[midi % 12] + (Math.floor(midi/12) - 1);
+}
+function noteLetter(midi) {
+  return NOTE_NAMES[midi % 12];
+}
+
+// ---------- Canvas setup ----------
+const canvas = document.getElementById('stage');
+const ctx = canvas.getContext('2d', { alpha: false, desynchronized: true });
+let DPR = Math.min(window.devicePixelRatio || 1, 2);
+let W = 0, H = 0;        // CSS pixels
+let pianoY = 0;          // top Y of piano bed (CSS px)
+let pianoH = 0;          // piano bed height (CSS px)
+let waterfallH = 0;      // height of waterfall area
+let whiteKeyW = 0;
+let whiteKeyH = 0;
+let blackKeyW = 0;
+let blackKeyH = 0;
+
+// Pre-computed key layout
+const keyLayout = []; // {midi, isBlack, x, w}
+
+function buildLayout() {
+  keyLayout.length = 0;
+  // Count whites
+  let whites = 0;
+  for (let m = FIRST_MIDI; m <= LAST_MIDI; m++) if (!isBlackKey(m)) whites++;
+  whiteKeyW = W / whites;
+  whiteKeyH = pianoH;
+  blackKeyW = whiteKeyW * 0.6;
+  blackKeyH = pianoH * 0.62;
+
+  let xCursor = 0;
+  // First pass: place whites and remember each midi's white-index x
+  const whiteX = new Map();
+  for (let m = FIRST_MIDI; m <= LAST_MIDI; m++) {
+    if (!isBlackKey(m)) {
+      whiteX.set(m, xCursor);
+      keyLayout.push({ midi: m, isBlack: false, x: xCursor, w: whiteKeyW });
+      xCursor += whiteKeyW;
+    }
+  }
+  // Second pass: place blacks between their neighbors
+  for (let m = FIRST_MIDI; m <= LAST_MIDI; m++) {
+    if (isBlackKey(m)) {
+      // black sits between (m-1) and (m+1) whites
+      const leftWhite = whiteX.get(m - 1);
+      if (leftWhite === undefined) continue;
+      const x = leftWhite + whiteKeyW - blackKeyW / 2;
+      keyLayout.push({ midi: m, isBlack: true, x, w: blackKeyW });
+    }
+  }
+  // sort so whites first, blacks last (for draw order)
+  keyLayout.sort((a,b) => (a.isBlack?1:0) - (b.isBlack?1:0));
+}
+
+function getKey(midi) {
+  for (let i = 0; i < keyLayout.length; i++) if (keyLayout[i].midi === midi) return keyLayout[i];
+  return null;
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  canvas.width  = Math.floor(W * DPR);
+  canvas.height = Math.floor(H * DPR);
+  canvas.style.width  = W + 'px';
+  canvas.style.height = H + 'px';
+  ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+
+  // Piano takes a chunk of bottom. Landscape: 22% (min 110, max 180). Portrait: 18%.
+  const isLandscape = W > H;
+  pianoH = isLandscape
+    ? Math.max(110, Math.min(180, H * 0.22))
+    : Math.max(90, Math.min(140, H * 0.18));
+  pianoY = H - pianoH;
+  waterfallH = pianoY;
+
+  buildLayout();
+}
+window.addEventListener('resize', resize);
+window.addEventListener('orientationchange', () => setTimeout(resize, 200));
+
+// ---------- State ----------
+const state = {
+  mode: 'normal',          // 'normal' | 'practice'
+  hand: 'both',            // 'lh' | 'rh' | 'both'
+  speed: 1.0,
+  volume: 0.8,
+  playing: false,
+  // Timeline in milliseconds (song time)
+  songTime: 0,
+  songDuration: 0,
+  lastFrameTs: 0,          // performance.now() of last frame
+  // Notes
+  notes: [],               // all notes, sorted by start time
+  // Per-key live state
+  activeMidiPressed: new Set(),    // physical input currently held
+  scheduledOn: new Map(),  // midi -> { source, expires } for visual flash from playback
+  // Wait-mode bookkeeping
+  waiting: false,
+  waitingFor: new Set(),   // midi notes that must be pressed to resume
+  waitGroupEndTime: 0,
+};
+
+// Look-ahead time (ms) for waterfall (how far above the hit line we render).
+// pixelsPerSecond is computed from waterfallH so that ~3 seconds of music fits.
+const LOOKAHEAD_MS = 3000;
+function pxPerMs() { return waterfallH / LOOKAHEAD_MS; }
+
+// ---------- Audio (Tone.js) ----------
+let pianoSampler = null;
+let audioReady = false;
+
+async function initAudio() {
+  if (audioReady) return;
+  await Tone.start();
+  // Use Salamander piano samples from Tone's CDN (works offline-ish once cached).
+  pianoSampler = new Tone.Sampler({
+    urls: {
+      "A0": "A0.mp3", "C1": "C1.mp3", "D#1": "Ds1.mp3", "F#1": "Fs1.mp3",
+      "A1": "A1.mp3", "C2": "C2.mp3", "D#2": "Ds2.mp3", "F#2": "Fs2.mp3",
+      "A2": "A2.mp3", "C3": "C3.mp3", "D#3": "Ds3.mp3", "F#3": "Fs3.mp3",
+      "A3": "A3.mp3", "C4": "C4.mp3", "D#4": "Ds4.mp3", "F#4": "Fs4.mp3",
+      "A4": "A4.mp3", "C5": "C5.mp3", "D#5": "Ds5.mp3", "F#5": "Fs5.mp3",
+      "A5": "A5.mp3", "C6": "C6.mp3", "D#6": "Ds6.mp3", "F#6": "Fs6.mp3",
+      "A6": "A6.mp3", "C7": "C7.mp3", "D#7": "Ds7.mp3", "F#7": "Fs7.mp3",
+      "A7": "A7.mp3", "C8": "C8.mp3"
+    },
+    release: 1,
+    baseUrl: "https://tonejs.github.io/audio/salamander/",
+    onload: () => { console.log('Piano samples loaded'); }
+  }).toDestination();
+  pianoSampler.volume.value = Tone.gainToDb(state.volume);
+  audioReady = true;
+}
+
+function playNote(midi, velocity = 0.8, durationSec = 0.5) {
+  if (!audioReady || !pianoSampler) return;
+  try {
+    const n = Tone.Frequency(midi, "midi").toNote();
+    pianoSampler.triggerAttackRelease(n, durationSec, undefined, Math.max(0.05, Math.min(1, velocity)));
+  } catch (e) { /* ignore */ }
+}
+function attackNote(midi, velocity = 0.8) {
+  if (!audioReady || !pianoSampler) return;
+  try {
+    const n = Tone.Frequency(midi, "midi").toNote();
+    pianoSampler.triggerAttack(n, undefined, Math.max(0.05, Math.min(1, velocity)));
+  } catch (e) {}
+}
+function releaseNote(midi) {
+  if (!audioReady || !pianoSampler) return;
+  try {
+    const n = Tone.Frequency(midi, "midi").toNote();
+    pianoSampler.triggerRelease(n);
+  } catch (e) {}
+}
+
+// ---------- Web MIDI ----------
+const midiStatusEl = document.getElementById('midiStatus');
+const midiStatusTextEl = document.getElementById('midiStatusText');
+
+async function initMIDI() {
+  if (!navigator.requestMIDIAccess) {
+    midiStatusEl.classList.add('warn');
+    midiStatusTextEl.textContent = 'MIDI not supported';
+    return;
+  }
+  try {
+    const access = await navigator.requestMIDIAccess({ sysex: false });
+    const update = () => {
+      let count = 0;
+      for (const input of access.inputs.values()) {
+        input.onmidimessage = onMIDIMessage;
+        count++;
+      }
+      if (count > 0) {
+        midiStatusEl.classList.add('ok'); midiStatusEl.classList.remove('warn');
+        midiStatusTextEl.textContent = count + ' MIDI device' + (count>1?'s':'');
+      } else {
+        midiStatusEl.classList.remove('ok'); midiStatusEl.classList.add('warn');
+        midiStatusTextEl.textContent = 'No MIDI device';
+      }
+    };
+    update();
+    access.onstatechange = update;
+  } catch (err) {
+    midiStatusEl.classList.add('warn');
+    midiStatusTextEl.textContent = 'MIDI blocked';
+  }
+}
+
+function onMIDIMessage(e) {
+  const [status, d1, d2] = e.data;
+  const cmd = status & 0xf0;
+  if (cmd === 0x90 && d2 > 0) {
+    // Note on
+    handleUserNoteOn(d1, d2 / 127);
+  } else if (cmd === 0x80 || (cmd === 0x90 && d2 === 0)) {
+    handleUserNoteOff(d1);
+  }
+}
+
+function handleUserNoteOn(midi, velocity) {
+  state.activeMidiPressed.add(midi);
+  attackNote(midi, velocity);
+  // If waiting, see if this satisfies waiting set
+  if (state.waiting && state.waitingFor.has(midi)) {
+    state.waitingFor.delete(midi);
+    if (state.waitingFor.size === 0) {
+      // Resume!
+      state.waiting = false;
+      hideWaitBanner();
+    }
+  }
+}
+function handleUserNoteOff(midi) {
+  state.activeMidiPressed.delete(midi);
+  releaseNote(midi);
+}
+
+// ---------- MIDI File Parsing ----------
+const fileInput = document.getElementById('fileInput');
+const fileNameEl = document.getElementById('fileName');
+
+fileInput.addEventListener('change', async (e) => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  fileNameEl.textContent = f.name;
+  try {
+    const buf = await f.arrayBuffer();
+    // @tonejs/midi exposes `Midi` global via UMD
+    const midi = new Midi(buf);
+    loadMidiObject(midi);
+  } catch (err) {
+    console.error(err);
+    alert('Failed to parse MIDI: ' + err.message);
+  }
+});
+
+function loadMidiObject(midi) {
+  // Build flat note list with absolute ms.
+  const notes = [];
+  // Heuristic: split by track first.
+  const tracks = midi.tracks.filter(t => t.notes && t.notes.length > 0);
+
+  // Compute average pitch per track to guess LH vs RH.
+  const trackInfo = tracks.map((t, idx) => {
+    let sum = 0; let n = 0;
+    for (const note of t.notes) { sum += note.midi; n++; }
+    return { idx, avg: n>0?sum/n:60, count: n, name: (t.name||'').toLowerCase() };
+  });
+
+  let lhTrackIdx = new Set();
+  if (trackInfo.length >= 2) {
+    // If track names hint, use those
+    const namedLH = trackInfo.filter(t => /left|bass|l\.h|lh/i.test(t.name));
+    const namedRH = trackInfo.filter(t => /right|treble|r\.h|rh|melody/i.test(t.name));
+    if (namedLH.length || namedRH.length) {
+      namedLH.forEach(t => lhTrackIdx.add(t.idx));
+    } else {
+      // Two-track guess: the lower-avg track is LH
+      const sorted = [...trackInfo].sort((a,b)=>a.avg-b.avg);
+      lhTrackIdx.add(sorted[0].idx);
+    }
+  }
+
+  for (let ti = 0; ti < tracks.length; ti++) {
+    const t = tracks[ti];
+    // Find original index in midi.tracks for channel info
+    const origIdx = midi.tracks.indexOf(t);
+    const isLH = lhTrackIdx.has(origIdx);
+    for (const note of t.notes) {
+      const startMs = note.time * 1000;
+      const durMs = Math.max(40, note.duration * 1000);
+      notes.push({
+        midi: note.midi,
+        startMs,
+        endMs: startMs + durMs,
+        durMs,
+        velocity: note.velocity,
+        hand: isLH ? 'lh' : 'rh',
+        // playback bookkeeping
+        triggered: false,
+        released: false,
+      });
+    }
+  }
+
+  notes.sort((a,b) => a.startMs - b.startMs);
+
+  // If only one track and many notes — split by pitch (middle C ~ 60)
+  if (lhTrackIdx.size === 0 && notes.length > 0) {
+    for (const n of notes) n.hand = n.midi < 60 ? 'lh' : 'rh';
+  }
+
+  state.notes = notes;
+  state.songDuration = notes.length ? Math.max(...notes.map(n => n.endMs)) + 1000 : 0;
+  state.songTime = 0;
+  state.waiting = false;
+  state.waitingFor.clear();
+  hideWaitBanner();
+  // Reset trigger flags
+  for (const n of state.notes) { n.triggered = false; n.released = false; }
+  // Auto play
+  setPlaying(true);
+}
+
+// ---------- UI bindings ----------
+const speedSlider = document.getElementById('speedSlider');
+const speedVal = document.getElementById('speedVal');
+const volSlider = document.getElementById('volSlider');
+const volVal = document.getElementById('volVal');
+const modeNormalBtn = document.getElementById('modeNormal');
+const modePracticeBtn = document.getElementById('modePractice');
+const handLHBtn = document.getElementById('handLH');
+const handRHBtn = document.getElementById('handRH');
+const handBothBtn = document.getElementById('handBoth');
+const playBtn = document.getElementById('playBtn');
+const rewindBtn = document.getElementById('rewindBtn');
+const panelToggleBtn = document.getElementById('panelToggleBtn');
+const panel = document.getElementById('panel');
+const waitBanner = document.getElementById('waitBanner');
+const waitText = document.getElementById('waitText');
+
+speedSlider.addEventListener('input', () => {
+  state.speed = parseFloat(speedSlider.value);
+  speedVal.textContent = state.speed.toFixed(2) + '×';
+});
+volSlider.addEventListener('input', () => {
+  state.volume = parseInt(volSlider.value, 10) / 100;
+  volVal.textContent = volSlider.value + '%';
+  if (pianoSampler) pianoSampler.volume.value = Tone.gainToDb(Math.max(0.0001, state.volume));
+});
+
+function setMode(m) {
+  state.mode = m;
+  modeNormalBtn.classList.toggle('active', m === 'normal');
+  modePracticeBtn.classList.toggle('active', m === 'practice');
+  if (m === 'normal') {
+    state.waiting = false; state.waitingFor.clear(); hideWaitBanner();
+  }
+}
+modeNormalBtn.addEventListener('click', () => setMode('normal'));
+modePracticeBtn.addEventListener('click', () => setMode('practice'));
+
+function setHand(h) {
+  state.hand = h;
+  handLHBtn.classList.toggle('active', h === 'lh');
+  handRHBtn.classList.toggle('active', h === 'rh');
+  handBothBtn.classList.toggle('active', h === 'both');
+}
+handLHBtn.addEventListener('click', () => setHand('lh'));
+handRHBtn.addEventListener('click', () => setHand('rh'));
+handBothBtn.addEventListener('click', () => setHand('both'));
+
+function setPlaying(p) {
+  state.playing = p;
+  playBtn.textContent = p ? '⏸' : '▶';
+  playBtn.classList.toggle('paused', !p);
+  if (p) state.lastFrameTs = performance.now();
+}
+playBtn.addEventListener('click', async () => {
+  await initAudio();
+  setPlaying(!state.playing);
+});
+rewindBtn.addEventListener('click', () => {
+  state.songTime = 0;
+  state.waiting = false; state.waitingFor.clear();
+  hideWaitBanner();
+  for (const n of state.notes) { n.triggered = false; n.released = false; }
+});
+
+panelToggleBtn.addEventListener('click', () => panel.classList.toggle('collapsed'));
+
+// Start overlay
+const startOverlay = document.getElementById('startOverlay');
+document.getElementById('startBtn').addEventListener('click', async () => {
+  await initAudio();
+  await initMIDI();
+  startOverlay.classList.add('hidden');
+  resize();
+});
+
+function showWaitBanner(midis) {
+  waitBanner.classList.add('show');
+  const names = [...midis].map(noteName).join(', ');
+  waitText.textContent = `Play: ${names}`;
+}
+function hideWaitBanner() {
+  waitBanner.classList.remove('show');
+}
+
+// ---------- Touch input on piano (optional bonus) ----------
+const touchActive = new Map(); // touchId -> midi
+
+function midiAtPoint(x, y) {
+  if (y < pianoY) return null;
+  // Check black first (drawn on top)
+  for (const k of keyLayout) if (k.isBlack) {
+    if (x >= k.x && x <= k.x + k.w && y <= pianoY + blackKeyH) return k.midi;
+  }
+  for (const k of keyLayout) if (!k.isBlack) {
+    if (x >= k.x && x <= k.x + k.w) return k.midi;
+  }
+  return null;
+}
+
+canvas.addEventListener('pointerdown', (e) => {
+  if (!audioReady) return;
+  const m = midiAtPoint(e.clientX, e.clientY);
+  if (m != null) {
+    touchActive.set(e.pointerId, m);
+    handleUserNoteOn(m, 0.8);
+    canvas.setPointerCapture(e.pointerId);
+  }
+});
+canvas.addEventListener('pointerup', (e) => {
+  const m = touchActive.get(e.pointerId);
+  if (m != null) { handleUserNoteOff(m); touchActive.delete(e.pointerId); }
+});
+canvas.addEventListener('pointercancel', (e) => {
+  const m = touchActive.get(e.pointerId);
+  if (m != null) { handleUserNoteOff(m); touchActive.delete(e.pointerId); }
+});
+
+// ---------- Game Loop ----------
+const WAIT_LEAD_MS = 50;        // pause this many ms before hit
+const WAIT_GROUP_MS = 30;       // notes within this window count as one chord
+
+function shouldPauseForHand(hand) {
+  if (state.mode !== 'practice') return false;
+  if (state.hand === 'both') return true;
+  return state.hand === hand;
+}
+
+function update(dtMs) {
+  if (!state.playing) return;
+  if (state.waiting) return;
+
+  const prevTime = state.songTime;
+  let nextTime = prevTime + dtMs * state.speed;
+
+  // ---- Practice / Wait-for-note detection ----
+  // Find the next "group" of notes the user must play.
+  // A note belongs to the wait set if shouldPauseForHand(note.hand).
+  if (state.mode === 'practice') {
+    // Find earliest pause-relevant note whose startMs > prevTime (not yet triggered).
+    let earliest = Infinity;
+    for (const n of state.notes) {
+      if (n.triggered) continue;
+      if (!shouldPauseForHand(n.hand)) continue;
+      if (n.startMs < earliest) earliest = n.startMs;
+      // notes are sorted by start so we could break early when n.startMs > earliest+epsilon
+      if (n.startMs > earliest + WAIT_GROUP_MS) break;
+    }
+    if (earliest !== Infinity) {
+      const pauseAt = earliest - WAIT_LEAD_MS;
+      if (nextTime >= pauseAt) {
+        // Clamp time and enter wait state
+        nextTime = pauseAt;
+        // Collect all notes in this chord window
+        const waitSet = new Set();
+        for (const n of state.notes) {
+          if (n.triggered) continue;
+          if (!shouldPauseForHand(n.hand)) continue;
+          if (n.startMs <= earliest + WAIT_GROUP_MS) {
+            waitSet.add(n.midi);
+            // Mark as triggered so we don't re-wait on the same chord.
+            n.triggered = true;
+            // They will be auto-released after their duration via the playback pass below
+            n.released = false;
+            // Their start time is "now" effectively (paused), endMs stays the same
+          }
+        }
+        // Also auto-trigger non-pause-relevant notes that happen within the same window (so the other hand plays)
+        state.waitingFor = waitSet;
+        state.waiting = true;
+        showWaitBanner(waitSet);
+      }
+    }
+  }
+
+  // ---- Auto-play notes whose start time has been crossed ----
+  // We trigger sound for any note whose startMs is between prevTime and nextTime,
+  // EXCEPT notes that we just put into the wait set (those are played by the user).
+  for (const n of state.notes) {
+    if (!n.triggered && n.startMs <= nextTime) {
+      // In practice mode, wait-relevant notes are user-played, others auto-play.
+      const userPlays = state.mode === 'practice' && shouldPauseForHand(n.hand);
+      if (!userPlays) {
+        playNote(n.midi, n.velocity, Math.max(0.1, n.durMs / 1000));
+      }
+      n.triggered = true;
+    }
+  }
+
+  state.songTime = Math.min(nextTime, state.songDuration || nextTime);
+  if (state.songDuration > 0 && state.songTime >= state.songDuration) {
+    setPlaying(false);
+  }
+}
+
+// ---------- Rendering ----------
+function clear() {
+  // Gradient bg drawn via CSS, but we still need to clear canvas
+  ctx.fillStyle = '#06060c';
+  ctx.fillRect(0, 0, W, H);
+
+  // Subtle grid lines in waterfall area for readability
+  ctx.fillStyle = 'rgba(255,255,255,0.02)';
+  for (const k of keyLayout) {
+    if (!k.isBlack) {
+      ctx.fillRect(k.x, 0, 1, waterfallH);
+    }
+  }
+  // Octave dividers (every C) brighter
+  ctx.fillStyle = 'rgba(255,255,255,0.06)';
+  for (const k of keyLayout) {
+    if (!k.isBlack && (k.midi % 12) === 0) {
+      ctx.fillRect(k.x, 0, 1, waterfallH);
+    }
+  }
+}
+
+function drawWaterfall() {
+  const ppms = pxPerMs();
+  const t0 = state.songTime;
+  const t1 = state.songTime + LOOKAHEAD_MS;
+
+  // Draw shaded background bands behind black keys for visual alignment
+  ctx.fillStyle = 'rgba(255,255,255,0.015)';
+  for (const k of keyLayout) {
+    if (k.isBlack) {
+      ctx.fillRect(k.x, 0, k.w, waterfallH);
+    }
+  }
+
+  // Notes
+  for (const n of state.notes) {
+    if (n.endMs < t0) continue;
+    if (n.startMs > t1) break; // sorted by start
+    const key = getKey(n.midi);
+    if (!key) continue;
+
+    // Y positions: hit line is at pianoY. Notes move down toward it.
+    // A note at songTime = startMs should have its bottom at pianoY.
+    const bottom = pianoY - (n.startMs - t0) * ppms;
+    const top    = pianoY - (n.endMs   - t0) * ppms;
+    const y = top;
+    const h = Math.max(3, bottom - top);
+
+    // Inset for visual clarity
+    const inset = key.isBlack ? 2 : 2;
+    const x = key.x + inset;
+    const w = Math.max(2, key.w - inset * 2);
+
+    const isActive = n.startMs <= state.songTime && state.songTime <= n.endMs;
+    const isWaiting = state.waiting && state.waitingFor.has(n.midi);
+
+    // Color by hand
+    const base = n.hand === 'lh' ? '#00d4ff' : '#ff3da6';
+    const glow = n.hand === 'lh' ? 'rgba(0,212,255,' : 'rgba(255,61,166,';
+
+    // Body
+    const grad = ctx.createLinearGradient(0, y, 0, y + h);
+    if (isWaiting) {
+      grad.addColorStop(0, '#fff');
+      grad.addColorStop(1, base);
+    } else if (isActive) {
+      grad.addColorStop(0, '#ffffff');
+      grad.addColorStop(0.4, base);
+      grad.addColorStop(1, base);
+    } else {
+      grad.addColorStop(0, base);
+      grad.addColorStop(1, glow + '0.55)');
+    }
+    ctx.fillStyle = grad;
+
+    // Rounded rect
+    const r = Math.min(6, w/2, h/2);
+    roundRect(ctx, x, y, w, h, r);
+    ctx.fill();
+
+    // Glow for nearest notes
+    const dist = Math.max(0, n.startMs - state.songTime);
+    if (dist < 600) {
+      ctx.save();
+      ctx.shadowColor = base;
+      ctx.shadowBlur = 12 * (1 - dist/600);
+      ctx.strokeStyle = 'rgba(255,255,255,0.25)';
+      ctx.lineWidth = 1;
+      roundRect(ctx, x, y, w, h, r);
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Hit line
+  const grad = ctx.createLinearGradient(0, pianoY - 2, 0, pianoY + 2);
+  grad.addColorStop(0, 'rgba(255,255,255,0.0)');
+  grad.addColorStop(0.5, 'rgba(255,255,255,0.9)');
+  grad.addColorStop(1, 'rgba(255,255,255,0.0)');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, pianoY - 2, W, 4);
+}
+
+function drawPiano() {
+  // Determine which keys are "lit" (either pressed by user, or actively playing)
+  const lit = new Map(); // midi -> {color, intensity}
+  // Active notes from playback timeline
+  for (const n of state.notes) {
+    if (n.startMs <= state.songTime && state.songTime <= n.endMs) {
+      lit.set(n.midi, { color: n.hand === 'lh' ? '#00d4ff' : '#ff3da6', source: 'play' });
+    }
+  }
+  // Waiting notes — special highlight
+  if (state.waiting) {
+    for (const m of state.waitingFor) {
+      lit.set(m, { color: '#ffffff', source: 'wait' });
+    }
+  }
+  // User-pressed (physical/touch) — overrides
+  for (const m of state.activeMidiPressed) {
+    lit.set(m, { color: '#36e07f', source: 'user' });
+  }
+
+  // White keys
+  for (const k of keyLayout) {
+    if (k.isBlack) continue;
+    const litInfo = lit.get(k.midi);
+    if (litInfo) {
+      // Splash background
+      const g = ctx.createLinearGradient(0, pianoY, 0, pianoY + pianoH);
+      g.addColorStop(0, hexToRgba(litInfo.color, 0.9));
+      g.addColorStop(1, hexToRgba(litInfo.color, 0.4));
+      ctx.fillStyle = g;
+    } else {
+      const g = ctx.createLinearGradient(0, pianoY, 0, pianoY + pianoH);
+      g.addColorStop(0, '#fafbff');
+      g.addColorStop(0.85, '#e6e9f5');
+      g.addColorStop(1, '#cdd2e4');
+      ctx.fillStyle = g;
+    }
+    ctx.fillRect(k.x, pianoY, k.w, pianoH);
+    // Edge
+    ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+    ctx.lineWidth = 1;
+    ctx.strokeRect(k.x + 0.5, pianoY + 0.5, k.w - 1, pianoH - 1);
+
+    // Label: only show C with octave numbers, and letters for all whites when key is wide enough
+    const showAll = whiteKeyW > 22;
+    const isC = (k.midi % 12) === 0;
+    if (showAll || isC) {
+      ctx.fillStyle = litInfo ? 'rgba(0,0,0,0.65)' : (isC ? '#7c5cff' : '#8a90b3');
+      ctx.font = (isC ? 'bold ' : '') + Math.max(9, Math.min(12, whiteKeyW * 0.45)) + 'px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      const label = isC ? noteName(k.midi) : noteLetter(k.midi);
+      ctx.fillText(label, k.x + k.w/2, pianoY + pianoH - 6);
+    }
+  }
+
+  // Black keys (drawn after whites)
+  for (const k of keyLayout) {
+    if (!k.isBlack) continue;
+    const litInfo = lit.get(k.midi);
+    if (litInfo) {
+      const g = ctx.createLinearGradient(0, pianoY, 0, pianoY + blackKeyH);
+      g.addColorStop(0, hexToRgba(litInfo.color, 1));
+      g.addColorStop(1, hexToRgba(litInfo.color, 0.6));
+      ctx.fillStyle = g;
+    } else {
+      const g = ctx.createLinearGradient(0, pianoY, 0, pianoY + blackKeyH);
+      g.addColorStop(0, '#2a2c3e');
+      g.addColorStop(0.5, '#15161f');
+      g.addColorStop(1, '#0a0b13');
+      ctx.fillStyle = g;
+    }
+    roundRect(ctx, k.x, pianoY, k.w, blackKeyH, 3);
+    ctx.fill();
+    ctx.strokeStyle = '#000';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+    // Top highlight
+    ctx.fillStyle = 'rgba(255,255,255,0.06)';
+    ctx.fillRect(k.x + 2, pianoY + 2, k.w - 4, 2);
+
+    // Label for wider black keys
+    if (blackKeyW > 16) {
+      ctx.fillStyle = litInfo ? 'rgba(255,255,255,0.85)' : 'rgba(255,255,255,0.45)';
+      ctx.font = Math.max(8, Math.min(10, blackKeyW * 0.5)) + 'px -apple-system, sans-serif';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'bottom';
+      ctx.fillText(noteLetter(k.midi), k.x + k.w/2, pianoY + blackKeyH - 4);
+    }
+  }
+
+  // Top bar above piano
+  ctx.fillStyle = 'rgba(255,255,255,0.08)';
+  ctx.fillRect(0, pianoY - 4, W, 1);
+  const topGrad = ctx.createLinearGradient(0, pianoY - 12, 0, pianoY);
+  topGrad.addColorStop(0, 'rgba(0,0,0,0)');
+  topGrad.addColorStop(1, 'rgba(0,0,0,0.5)');
+  ctx.fillStyle = topGrad;
+  ctx.fillRect(0, pianoY - 12, W, 12);
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  if (w < 2*r) r = w/2;
+  if (h < 2*r) r = h/2;
+  if (r < 0) r = 0;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+function hexToRgba(hex, a) {
+  // Accept #rrggbb or rgb()-already
+  if (hex.startsWith('rgba') || hex.startsWith('rgb')) return hex;
+  const h = hex.replace('#','');
+  const bi = parseInt(h, 16);
+  const r = (bi >> 16) & 255, g = (bi >> 8) & 255, b = bi & 255;
+  return `rgba(${r},${g},${b},${a})`;
+}
+
+// ---------- Main loop ----------
+function frame(ts) {
+  const dt = Math.min(50, ts - (state.lastFrameTs || ts));
+  state.lastFrameTs = ts;
+
+  update(dt);
+
+  clear();
+  drawWaterfall();
+  drawPiano();
+
+  requestAnimationFrame(frame);
+}
+
+resize();
+requestAnimationFrame((ts) => { state.lastFrameTs = ts; frame(ts); });
+
+// Some browsers (mobile Chrome) may suspend audio until user gesture.
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden && state.playing) setPlaying(false);
+});
+
+</script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v833ccba57c9e4d2798f2e76cebdd09a11778172276447" integrity="sha512-57MDmcccJXYtNnH+ZiBwzC4jb2rvgVCEokYN+L/nLlmO8rfYT/gIpW2A569iJ/3b+0UEasghjuZH/ma3wIs/EQ==" data-cf-beacon='{"version":"2024.11.0","token":"4edd5f8ec12a48cfa682ab8261b80a79","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
