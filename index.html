@@ -276,6 +276,11 @@
   .tbtn:active { transform: scale(0.92); }
   .tbtn.play { background: linear-gradient(135deg, var(--accent), #5a3dff); }
   .tbtn.play.paused { background: linear-gradient(135deg, var(--good), #2ab864); }
+  .tbtn.active {
+    background: linear-gradient(135deg, var(--accent), #5a3dff);
+    box-shadow: 0 0 12px var(--accent);
+    border-color: transparent;
+  }
 
   /* ---------- Wait-for-note indicator (hidden — labels now render on the falling blocks) ---------- */
   .wait-banner {
@@ -893,6 +898,7 @@
     <button class="tbtn play" id="playBtn" title="Play/Pause">▶</button>
     <button class="tbtn record" id="recordBtn" title="Record (Freeplay mode only)">●</button>
     <button class="tbtn download-midi" id="downloadMidiBtn" title="Download recording as .mid">⬇</button>
+    <button class="tbtn active" id="sheetToggleBtn" title="Toggle Sheet Music">🎼</button>
     <button class="tbtn" id="panelToggleBtn" title="Settings">⚙</button>
   </div>
 
@@ -1002,6 +1008,28 @@
       </label>
     </div>
 
+    <h3 style="margin-top:10px;">Fingering Display</h3>
+    <div class="toggle-row">
+      <span class="toggle-label">
+        Show Fingers on Sheet
+        <span class="hint">Display finger numbers (1–5) next to notes on the staff</span>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="sheetFingersToggle" checked />
+        <span class="slider-track"></span>
+      </label>
+    </div>
+    <div class="toggle-row" style="margin-top:6px;">
+      <span class="toggle-label">
+        Show Fingers on Cascade
+        <span class="hint">Display finger numbers (1–5) inside the falling notes</span>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="cascadeFingersToggle" checked />
+        <span class="slider-track"></span>
+      </label>
+    </div>
+
     <h3 style="margin-top:10px;">Note Naming</h3>
     <div class="row">
       <button class="btn active" id="notationEnglish" type="button">English<br><span style="font-size:10px;opacity:0.7;font-weight:500;">C, D, E…</span></button>
@@ -1018,10 +1046,24 @@
       </div>
     </div>
 
-    <h3 style="margin-top:10px;">Hand Split Threshold</h3>
-    <div class="slider-wrap">
-      <label>Split <span class="val" id="handSplitVal">Auto</span></label>
+    <h3 style="margin-top:10px;">Hand Split Mode</h3>
+    <div class="row">
+      <button class="btn active" id="splitModeAuto" type="button">Auto</button>
+      <button class="btn" id="splitModeManual" type="button">Manual</button>
+    </div>
+    <div class="slider-wrap" id="manualSplitSliderWrap" style="margin-top:6px; display:none;">
+      <label>Threshold <span class="val" id="handSplitVal">60</span></label>
       <input type="range" id="handSplitSlider" min="20" max="108" step="1" value="60" />
+    </div>
+    <div class="toggle-row" style="margin-top:6px;">
+      <span class="toggle-label">
+        Balance Large Chords
+        <span class="hint">Dynamically adjust hands to ensure neither plays >5 notes at once</span>
+      </span>
+      <label class="switch">
+        <input type="checkbox" id="dynamicBalanceToggle" checked />
+        <span class="slider-track"></span>
+      </label>
     </div>
 
     <h3 style="margin-top:10px;">MIDI File</h3>
@@ -1211,6 +1253,7 @@ const state = {
   mode: 'normal',          // 'normal' | 'practice' | 'freeplay'
   hand: 'both',            // 'lh' | 'rh' | 'both'
   speed: 1.0,
+  bpm: 120,
   volume: 0.8,
   playing: false,
   // Timeline in milliseconds (song time)
@@ -1292,6 +1335,11 @@ const state = {
   // both the web-audio synth and the hardware MIDI out.
   muteLeftHand:  false,
   muteRightHand: false,
+  showSheet: true,
+  showSheetFingers: true,
+  showCascadeFingers: true,
+  splitMode: 'auto', // 'auto' | 'manual'
+  dynamicBalance: true,
 
 };
 
@@ -1752,21 +1800,102 @@ fileInput.addEventListener('change', async (e) => {
   }
 });
 
+function applyDynamicHandBalancing() {
+  if (state.notes.length === 0) return;
+  
+  // Sort notes by startMs first to ensure cluster grouping is correct
+  state.notes.sort((a, b) => a.startMs - b.startMs);
+  
+  // Group notes into clusters by startMs (150ms window)
+  const clusters = [];
+  let currentCluster = [state.notes[0]];
+  
+  for (let i = 1; i < state.notes.length; i++) {
+    const curr = state.notes[i];
+    const last = currentCluster[currentCluster.length - 1];
+    
+    if (curr.startMs - last.startMs <= 150) {
+      currentCluster.push(curr);
+    } else {
+      clusters.push(currentCluster);
+      currentCluster = [curr];
+    }
+  }
+  clusters.push(currentCluster);
+  
+  // Balance each cluster
+  for (const cluster of clusters) {
+    const len = cluster.length;
+    if (len <= 1) continue;
+    
+    // Count current assignments in the cluster
+    let lhCount = 0;
+    for (const n of cluster) {
+      if (n.hand === 'lh') lhCount++;
+    }
+    const rhCount = len - lhCount;
+    
+    // If either hand exceeds 5 notes, balance the cluster
+    if (lhCount > 5 || rhCount > 5) {
+      cluster.sort((a, b) => a.midi - b.midi);
+      let targetLH = lhCount;
+      
+      if (len <= 10) {
+        // We need to keep both hands <= 5 notes.
+        // Constraint: len - 5 <= targetLH <= 5
+        const minLH = len - 5;
+        const maxLH = 5;
+        if (targetLH < minLH) targetLH = minLH;
+        if (targetLH > maxLH) targetLH = maxLH;
+      } else {
+        // More than 10 notes, split as evenly as possible
+        targetLH = Math.floor(len / 2);
+      }
+      
+      for (let i = 0; i < len; i++) {
+        cluster[i].hand = i < targetLH ? 'lh' : 'rh';
+      }
+    }
+  }
+  
+  // Re-sort notes by startMs
+  state.notes.sort((a, b) => a.startMs - b.startMs);
+}
+
 function applyHandSplit() {
-  // Re-color all loaded notes (and any freeplay blocks) according to the
-  // current state.handSplit. When -1 we leave whatever was decided on load
-  // (the smart track/channel heuristic).
-  if (state.handSplit < 0) return;
-  const t = state.handSplit;
-  for (const n of state.notes) {
-    n.hand = n.midi >= t ? 'rh' : 'lh';
+  if (state.splitMode === 'manual') {
+    const t = state.handSplit;
+    for (const n of state.notes) {
+      n.hand = n.midi >= t ? 'rh' : 'lh';
+    }
+  } else {
+    for (const n of state.notes) {
+      n.hand = n.autoHand || (n.midi >= 60 ? 'rh' : 'lh');
+    }
   }
+  
+  // Apply dynamic hand balancing if enabled
+  if (state.dynamicBalance) {
+    applyDynamicHandBalancing();
+  }
+  
   for (const b of state.freeplayBlocks) {
-    b.hand = b.midi >= t ? 'rh' : 'lh';
+    if (state.splitMode === 'manual') {
+      b.hand = b.midi >= state.handSplit ? 'rh' : 'lh';
+    } else {
+      b.hand = b.midi >= 60 ? 'rh' : 'lh';
+    }
   }
+  calculateFingerings();
 }
 
 function loadMidiObject(midi) {
+  // Get BPM from tempos
+  const bpm = (midi.header.tempos && midi.header.tempos.length > 0)
+    ? Math.round(midi.header.tempos[0].bpm)
+    : 120;
+  state.bpm = bpm;
+
   // Build flat note list with absolute ms.
   const notes = [];
   // Heuristic: split by track first.
@@ -1808,6 +1937,7 @@ function loadMidiObject(midi) {
         durMs,
         velocity: note.velocity,
         hand: isLH ? 'lh' : 'rh',
+        autoHand: isLH ? 'lh' : 'rh',
         // playback bookkeeping
         triggered: false,
         released: false,
@@ -1819,7 +1949,10 @@ function loadMidiObject(midi) {
 
   // If only one track and many notes — split by pitch (middle C ~ 60)
   if (lhTrackIdx.size === 0 && notes.length > 0) {
-    for (const n of notes) n.hand = n.midi < 60 ? 'lh' : 'rh';
+    for (const n of notes) {
+      n.hand = n.midi < 60 ? 'lh' : 'rh';
+      n.autoHand = n.midi < 60 ? 'lh' : 'rh';
+    }
   }
 
   state.notes = notes;
@@ -1837,6 +1970,7 @@ function loadMidiObject(midi) {
   hideVictoryOverlay();
   // If the user has overridden the split, re-apply it on top of the smart guess.
   applyHandSplit();
+  calculateFingerings();
   // Auto play
   setPlaying(true);
 }
@@ -2263,6 +2397,7 @@ function stopRecording() {
       durMs,
       velocity: ev.velocity,
       hand,
+      autoHand: hand,
       triggered: false,
       released: false,
     };
@@ -2270,6 +2405,8 @@ function stopRecording() {
 
   // Load straight into state.notes — wipes any previously loaded song.
   state.notes = notes;
+  state.bpm = 120;
+  applyHandSplit();
   // Stash a clean copy for the .mid downloader — survives mode/song switches.
   state.recordedNotes = notes.map(n => ({
     midi: n.midi, startMs: n.startMs, endMs: n.endMs,
@@ -2324,6 +2461,22 @@ function updateHandSplitLabel() {
     handSplitVal.textContent = noteName(state.handSplit) + ' (' + state.handSplit + ')';
   }
 }
+function setHandSplitMode(mode) {
+  state.splitMode = mode;
+  document.getElementById('splitModeAuto').classList.toggle('active', mode === 'auto');
+  document.getElementById('splitModeManual').classList.toggle('active', mode === 'manual');
+  
+  const sliderWrap = document.getElementById('manualSplitSliderWrap');
+  if (sliderWrap) {
+    sliderWrap.style.display = mode === 'manual' ? 'block' : 'none';
+  }
+  
+  applyHandSplit();
+}
+
+document.getElementById('splitModeAuto').addEventListener('click', () => setHandSplitMode('auto'));
+document.getElementById('splitModeManual').addEventListener('click', () => setHandSplitMode('manual'));
+
 if (handSplitSlider) {
   // Initial label.
   updateHandSplitLabel();
@@ -2532,6 +2685,29 @@ if (webAudioOnlyToggle) {
   });
 }
 
+// ---------- Fingering Toggles wiring ----------
+const sheetFingersToggle = document.getElementById('sheetFingersToggle');
+if (sheetFingersToggle) {
+  sheetFingersToggle.addEventListener('change', () => {
+    state.showSheetFingers = !!sheetFingersToggle.checked;
+  });
+}
+const cascadeFingersToggle = document.getElementById('cascadeFingersToggle');
+if (cascadeFingersToggle) {
+  cascadeFingersToggle.addEventListener('change', () => {
+    state.showCascadeFingers = !!cascadeFingersToggle.checked;
+  });
+}
+
+const dynamicBalanceToggle = document.getElementById('dynamicBalanceToggle');
+if (dynamicBalanceToggle) {
+  dynamicBalanceToggle.checked = state.dynamicBalance;
+  dynamicBalanceToggle.addEventListener('change', () => {
+    state.dynamicBalance = !!dynamicBalanceToggle.checked;
+    applyHandSplit();
+  });
+}
+
 // ---------- A-B Loop wiring (Upgrade 1) ----------
 const loopBtn     = document.getElementById('loopBtn');
 const loopDisplay = document.getElementById('loopDisplay');
@@ -2644,6 +2820,15 @@ function setNotation(n) {
 }
 if (notationEnglishBtn) notationEnglishBtn.addEventListener('click', () => setNotation('english'));
 if (notationFrenchBtn)  notationFrenchBtn.addEventListener('click',  () => setNotation('french'));
+
+// ---------- Sheet Music toggle wiring ----------
+const sheetToggleBtn = document.getElementById('sheetToggleBtn');
+if (sheetToggleBtn) {
+  sheetToggleBtn.addEventListener('click', () => {
+    state.showSheet = !state.showSheet;
+    sheetToggleBtn.classList.toggle('active', state.showSheet);
+  });
+}
 
 // ---------- Download MIDI button wiring (Update 3) ----------
 const downloadMidiBtn = document.getElementById('downloadMidiBtn');
@@ -2857,6 +3042,371 @@ function update(dtMs) {
   }
 }
 
+// ---------- Sheet Music & Fingering Helpers ----------
+function assignHandFingerings(handNotes, hand) {
+  if (handNotes.length === 0) return;
+  
+  const windowMs = 1000; // 1 second look-around window to find local hand span
+  
+  for (let i = 0; i < handNotes.length; i++) {
+    const curr = handNotes[i];
+    
+    // Find all notes of the same hand in the local time window
+    const localPitches = [];
+    for (let j = 0; j < handNotes.length; j++) {
+      const n = handNotes[j];
+      if (Math.abs(n.startMs - curr.startMs) <= windowMs) {
+        localPitches.push(n.midi);
+      }
+    }
+    
+    if (localPitches.length <= 1) {
+      curr.finger = hand === 'rh' ? 1 : 5; // Default comfortable starting finger
+      continue;
+    }
+    
+    const p_min = Math.min(...localPitches);
+    const p_max = Math.max(...localPitches);
+    const r = p_max - p_min;
+    
+    if (r === 0) {
+      curr.finger = 3; // Center finger for repeated notes
+    } else {
+      // Clamp range to a minimum of 7 semitones (a perfect fifth) to simulate a natural hand span.
+      // This maps the notes smoothly to fingers 1..5.
+      const span = Math.max(7, r);
+      const fraction = (curr.midi - p_min) / span;
+      
+      let finger;
+      if (hand === 'rh') {
+        finger = 1 + Math.round(4 * fraction); // 1 (thumb) to 5 (pinky)
+      } else {
+        finger = 5 - Math.round(4 * fraction); // 5 (pinky) to 1 (thumb)
+      }
+      curr.finger = Math.max(1, Math.min(5, finger));
+    }
+  }
+}
+
+function calculateFingerings() {
+  const lhNotes = state.notes.filter(n => n.hand === 'lh');
+  const rhNotes = state.notes.filter(n => n.hand === 'rh');
+
+  assignHandFingerings(lhNotes, 'lh');
+  assignHandFingerings(rhNotes, 'rh');
+}
+
+function getDiatonicPos(midi) {
+  const rel = midi - 60;
+  const octave = Math.floor(rel / 12);
+  const semitone = ((rel % 12) + 12) % 12;
+  
+  const lookup = [
+    { step: 0, acc: null }, // C
+    { step: 0, acc: '♯'  }, // C#
+    { step: 1, acc: null }, // D
+    { step: 1, acc: '♯'  }, // D#
+    { step: 2, acc: null }, // E
+    { step: 3, acc: null }, // F
+    { step: 3, acc: '♯'  }, // F#
+    { step: 4, acc: null }, // G
+    { step: 4, acc: '♯'  }, // G#
+    { step: 5, acc: null }, // A
+    { step: 5, acc: '♯'  }, // A#
+    { step: 6, acc: null }  // B
+  ];
+  
+  const info = lookup[semitone];
+  return {
+    step: octave * 7 + info.step,
+    acc: info.acc
+  };
+}
+
+function drawSheetMusic() {
+  if (!state.showSheet) return;
+
+  const panelX = 10;
+  const panelY = 56; 
+  const panelW = W - 20;
+  const panelH = 180;
+  const r = 16;
+
+  ctx.save();
+
+  // Draw panel background (White / clean off-white background)
+  ctx.fillStyle = 'rgba(255, 255, 255, 0.96)'; 
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.1)';
+  ctx.lineWidth = 1.5;
+  roundRect(ctx, panelX, panelY, panelW, panelH, r);
+  ctx.fill();
+  ctx.stroke();
+
+  // Clip to the panel interior
+  ctx.beginPath();
+  roundRect(ctx, panelX + 5, panelY + 5, panelW - 10, panelH - 10, r - 5);
+  ctx.clip();
+
+  // Define staff positions
+  const L = 8; 
+  const y_treble = panelY + 50;
+  const y_bass = panelY + 130;
+  const x_playhead = panelX + panelW / 2; 
+
+  // 1. Draw staff lines (Treble) - Dark gray for clean readability
+  ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+  ctx.lineWidth = 1;
+  for (let i = -2; i <= 2; i++) {
+    const y = y_treble + i * L;
+    ctx.beginPath();
+    ctx.moveTo(panelX + 10, y);
+    ctx.lineTo(panelX + panelW - 10, y);
+    ctx.stroke();
+  }
+
+  // 2. Draw staff lines (Bass)
+  for (let i = -2; i <= 2; i++) {
+    const y = y_bass + i * L;
+    ctx.beginPath();
+    ctx.moveTo(panelX + 10, y);
+    ctx.lineTo(panelX + panelW - 10, y);
+    ctx.stroke();
+  }
+
+  // Draw BPM text at the top right of the sheet music
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.65)';
+  ctx.font = 'bold 12px sans-serif';
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'top';
+  ctx.fillText('♩ = ' + (state.bpm || 120) + ' BPM', panelX + panelW - 15, panelY + 12);
+
+  // 3. Draw Notes (Clipped to the staff region width)
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(panelX + 10, panelY + 5, panelW - 20, panelH - 10);
+  ctx.clip();
+
+  const scale_x = 0.12; 
+  const t0 = state.songTime;
+
+  const t_start = t0 - (x_playhead - (panelX + 10)) / scale_x;
+  const t_end = t0 + (panelX + panelW - x_playhead) / scale_x;
+
+  for (const n of state.notes) {
+    if (n.endMs < t_start) continue;
+    if (n.startMs > t_end) break; 
+
+    const x = x_playhead + (n.startMs - t0) * scale_x;
+    const isPast = x < x_playhead;
+    if (isPast) {
+      ctx.globalAlpha = 0.5;
+    }
+    const isLH = n.hand === 'lh';
+    const y_center = isLH ? y_bass : y_treble;
+    const center_step = isLH ? -6 : 6;
+
+    const { step, acc } = getDiatonicPos(n.midi);
+    const y = y_center - (step - center_step) * (L / 2);
+
+    if (y < panelY + 10 || y > panelY + panelH - 10) continue;
+
+    // Draw ledger lines - Dark gray
+    ctx.strokeStyle = 'rgba(0, 0, 0, 0.25)';
+    ctx.lineWidth = 1;
+    if (!isLH) {
+      if (step <= 0) { 
+        for (let s = 0; s >= step; s -= 2) {
+          const ly = y_center - (s - center_step) * (L / 2);
+          ctx.beginPath();
+          ctx.moveTo(x - L * 1.2, ly);
+          ctx.lineTo(x + L * 1.2, ly);
+          ctx.stroke();
+        }
+      } else if (step >= 12) { 
+        for (let s = 12; s <= step; s += 2) {
+          const ly = y_center - (s - center_step) * (L / 2);
+          ctx.beginPath();
+          ctx.moveTo(x - L * 1.2, ly);
+          ctx.lineTo(x + L * 1.2, ly);
+          ctx.stroke();
+        }
+      }
+    } else {
+      if (step >= 0) { 
+        for (let s = 0; s <= step; s += 2) {
+          const ly = y_center - (s - center_step) * (L / 2);
+          ctx.beginPath();
+          ctx.moveTo(x - L * 1.2, ly);
+          ctx.lineTo(x + L * 1.2, ly);
+          ctx.stroke();
+        }
+      } else if (step <= -12) { 
+        for (let s = -12; s >= step; s -= 2) {
+          const ly = y_center - (s - center_step) * (L / 2);
+          ctx.beginPath();
+          ctx.moveTo(x - L * 1.2, ly);
+          ctx.lineTo(x + L * 1.2, ly);
+          ctx.stroke();
+        }
+      }
+    }
+
+    const isActive = n.startMs <= t0 && t0 <= n.endMs;
+    
+    // Determine note type and time symbol
+    const bpm = state.bpm || 120;
+    const quarterMs = 60000 / bpm;
+    const beats = n.durMs / quarterMs;
+
+    let isWhole = false;
+    let isHalf = false;
+    let isQuarter = false;
+    let isEighth = false;
+    let isSixteenth = false;
+
+    if (beats >= 3.0) {
+      isWhole = true;
+    } else if (beats >= 1.5) {
+      isHalf = true;
+    } else if (beats >= 0.75) {
+      isQuarter = true;
+    } else if (beats >= 0.375) {
+      isEighth = true;
+    } else {
+      isSixteenth = true;
+    }
+
+    // Black notes by default; active highlights in hand color
+    const noteColor = '#000000'; 
+    const activeColor = isLH ? '#0097a7' : '#d62a85'; 
+    const drawColor = isActive ? activeColor : noteColor;
+    
+    // Draw note stem (for everything except whole notes)
+    const stemUp = step < center_step;
+    const stemLength = L * 3.2;
+    const stemX = stemUp ? x + L * 0.65 : x - L * 0.65;
+    const stemEndY = stemUp ? y - stemLength : y + stemLength;
+
+    if (!isWhole) {
+      ctx.strokeStyle = drawColor;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(stemX, y);
+      ctx.lineTo(stemX, stemEndY);
+      ctx.stroke();
+
+      // Draw flags for eighth and sixteenth notes
+      if (isEighth || isSixteenth) {
+        ctx.fillStyle = drawColor;
+        ctx.beginPath();
+        if (stemUp) {
+          ctx.moveTo(stemX, stemEndY);
+          ctx.bezierCurveTo(stemX + L * 0.6, stemEndY + L * 0.5, stemX + L * 1.0, stemEndY + L * 1.5, stemX + L * 0.8, stemEndY + L * 2.2);
+          ctx.bezierCurveTo(stemX + L * 0.7, stemEndY + L * 1.8, stemX + L * 0.4, stemEndY + L * 1.0, stemX, stemEndY + L * 0.5);
+          ctx.closePath();
+          ctx.fill();
+
+          if (isSixteenth) {
+            ctx.beginPath();
+            const offset = L * 0.8;
+            ctx.moveTo(stemX, stemEndY + offset);
+            ctx.bezierCurveTo(stemX + L * 0.6, stemEndY + offset + L * 0.5, stemX + L * 1.0, stemEndY + offset + L * 1.5, stemX + L * 0.8, stemEndY + offset + L * 2.2);
+            ctx.bezierCurveTo(stemX + L * 0.7, stemEndY + offset + L * 1.8, stemX + L * 0.4, stemEndY + offset + L * 1.0, stemX, stemEndY + offset + L * 0.5);
+            ctx.closePath();
+            ctx.fill();
+          }
+        } else {
+          ctx.moveTo(stemX, stemEndY);
+          ctx.bezierCurveTo(stemX + L * 0.6, stemEndY - L * 0.5, stemX + L * 1.0, stemEndY - L * 1.5, stemX + L * 0.8, stemEndY - L * 2.2);
+          ctx.bezierCurveTo(stemX + L * 0.7, stemEndY - L * 1.8, stemX + L * 0.4, stemEndY - L * 1.0, stemX, stemEndY - L * 0.5);
+          ctx.closePath();
+          ctx.fill();
+
+          if (isSixteenth) {
+            ctx.beginPath();
+            const offset = L * 0.8;
+            ctx.moveTo(stemX, stemEndY - offset);
+            ctx.bezierCurveTo(stemX + L * 0.6, stemEndY - offset - L * 0.5, stemX + L * 1.0, stemEndY - offset - L * 1.5, stemX + L * 0.8, stemEndY - offset - L * 2.2);
+            ctx.bezierCurveTo(stemX + L * 0.7, stemEndY - offset - L * 1.8, stemX + L * 0.4, stemEndY - offset - L * 1.0, stemX, stemEndY - offset - L * 0.5);
+            ctx.closePath();
+            ctx.fill();
+          }
+        }
+      }
+    }
+
+    // Draw note head
+    ctx.beginPath();
+    ctx.ellipse(x, y, L * 0.7, L * 0.5, -0.25, 0, 2 * Math.PI);
+    
+    if (isWhole || isHalf) {
+      // Open note head (white inside, stroked outline)
+      ctx.fillStyle = isActive ? 'rgba(0, 0, 0, 0.08)' : '#ffffff'; 
+      ctx.fill();
+      ctx.strokeStyle = drawColor;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+    } else {
+      // Closed note head
+      ctx.fillStyle = drawColor;
+      ctx.fill();
+    }
+
+    // Draw accidental - Dark gray
+    if (acc) {
+      ctx.font = '14px sans-serif';
+      ctx.fillStyle = drawColor;
+      ctx.textAlign = 'right';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(acc, x - L * 0.9, y);
+    }
+
+    // Draw finger number (black badge with white text for maximum legibility)
+    if (n.finger && state.showSheetFingers) {
+      ctx.font = 'bold 10px sans-serif';
+      ctx.fillStyle = '#ffffff';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = stemUp ? 'top' : 'bottom';
+      const fy = stemUp ? y + L * 0.8 : y - L * 0.8;
+      
+      ctx.save();
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.75)';
+      ctx.beginPath();
+      ctx.arc(x, fy, 6, 0, 2 * Math.PI);
+      ctx.fill();
+      ctx.restore();
+      
+      ctx.fillText(n.finger, x, fy);
+    }
+    
+    if (isPast) {
+      ctx.globalAlpha = 1.0;
+    }
+  }
+
+  ctx.restore(); // Restore notes clip
+
+  // 4. Draw Playhead line (Center line) - on top of notes
+  ctx.strokeStyle = 'rgba(255, 61, 166, 0.7)'; 
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(x_playhead, panelY + 15);
+  ctx.lineTo(x_playhead, panelY + panelH - 15);
+  ctx.stroke();
+
+  // 5. Draw F and G Clefs just to the left of the center line - on top of notes
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.8)';
+  ctx.font = '36px sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('𝄞', x_playhead - 35, y_treble);
+
+  ctx.font = '30px sans-serif';
+  ctx.fillText('𝄢', x_playhead - 35, y_bass - 2);
+
+  ctx.restore(); // Restore panel interior clip
+}
+
 // ---------- Rendering ----------
 function clear() {
   // Gradient bg drawn via CSS, but we still need to clear canvas
@@ -3046,8 +3596,8 @@ function drawWaterfall() {
     //      black-key block on a 360 px landscape phone still shows text,
     //   4. clips draws to the block bounds so any residual overflow is
     //      contained instead of leaking onto adjacent rectangles.
-    if (state.mode === 'practice') {
-      const label = noteLetter(n.midi); // 'C' / 'C#' / 'Do' / 'Do#' depending on notation
+    if (state.mode === 'practice' || state.mode === 'normal') {
+      const label = noteLetter(n.midi) + (n.finger && state.showCascadeFingers ? ' (' + n.finger + ')' : '');
       const isSharp = key.isBlack;
       // Available pixel budget — leave ~12% padding on each side.
       const maxTextW = w * 0.86;
@@ -3280,6 +3830,7 @@ function frame(ts) {
     drawFreeplayBlocks();
   } else {
     drawWaterfall();
+    drawSheetMusic();
   }
   drawPiano();
   drawFloaters();
