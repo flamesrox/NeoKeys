@@ -1,3 +1,5 @@
+This is a fork of the original work from ArtinSHF (https://github.com/ArtinSHF), for personal offline use, everything I might add will be vibecoded because I do not need great code as long as it works for me, if you find anything useful make sure to thank ArtinSHF for their work. All the following text is from the original repo (https://github.com/ArtinSHF/NeoKeys)
+
 # NeoKeys 🎹
 
 NeoKeys is a web-based MIDI piano trainer and interactive musical workstation featuring falling notes, an inverted arcade Freeplay mode, full session recording, hardware MIDI output pass-through, and a responsive, mobile-friendly interface.
